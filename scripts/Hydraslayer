@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+
+import logging
+from sys import exit
+from os import path
+from Hydraslayer.assembly_stats import Assembly
+from Hydraslayer.Fixer import Fixer
+import textwrap
+
+logger = None
+
+
+def init_logger():
+
+    global logger
+    logger = logging.getLogger("Hydraslayer")
+    logger.setLevel(logging.DEBUG)
+    ch = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+
+def get_args():
+    import argparse
+    parser = argparse.ArgumentParser(formatter_class = argparse.RawTextHelpFormatter,
+                                     epilog=textwrap.dedent('''\
+                                     Author: Joris van Steenbrugge
+                                     Version: 1.0'''),
+                                     description=textwrap.dedent('''\
+______           _         _   _            _   _           _                 _                       
+| ___ \         | |       | | | |          | | | |         | |               | |                      
+| |_/ __ _ _   _| | __ _  | |_| |__   ___  | |_| |_   _  __| |_ __ __ _   ___| | __ _ _   _  ___ _ __ 
+|  __/ _` | | | | |/ _` | | __| '_ \ / _ \ |  _  | | | |/ _` | '__/ _` | / __| |/ _` | | | |/ _ | '__|
+| | | (_| | |_| | | (_| | | |_| | | |  __/ | | | | |_| | (_| | | | (_| | \__ | | (_| | |_| |  __| |   
+\_|  \__,_|\__,_|_|\__,_|  \__|_| |_|\___| \_| |_/\__, |\__,_|_|  \__,_| |___|_|\__,_|\__, |\___|_|   
+                                                   __/ |                               __/ |          
+                                                  |___/                               |___/           '''))
+    parser.add_argument("assembly", metavar='assembly',
+                        help="assembly file in fasta format")
+    parser.add_argument("BAM", metavar='BAM', help="Reads aligned to the assembly in bam format")
+
+    parser.add_argument('-o', '--output', dest="outfile",
+                        help="Output assembly file (default: stdout)",
+                        default='/dev/stdout')
+
+    parser.add_argument("-b", '--bounds', help="upper and lower boundaries for the gap regions (default: 1000)",
+                        type=int, default=1000, dest="bounds")
+    parser.add_argument("-l", '--len', help="Mimum gap length to cover (default: 100)",
+                        type=int, default=100, dest="minlen")
+    parser.add_argument('-c', '--coverage', help="Cutoff for the minimal reads that map per position (default: 3)",
+                        type=int, default=3, dest='mincov')
+    parser.add_argument("-a", "--align", help="Number of sequences to use in the alignment. This options is available "
+                                              "to tweak perfomance/accuracy. (default: 30)",
+                        type=int, default=30, dest="align")
+
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    init_logger()
+    options = get_args()
+
+    if not path.exists(options.BAM):
+        logger.error("Bam file does not exist")
+        exit(1)
+    if not path.exists(f"{options.BAM}.bai"):
+        logger.error("Index your bam file prior to running this program (using samtools index)")
+        exit(1)
+
+    assembly = Assembly(options.assembly)
+    gaps = assembly.get_gaps(options.minlen, options.bounds)
+
+    logger.info(f"{len(gaps)} gaps were found")
+
+    f = Fixer(options.BAM, options)
+
+    for gap in gaps:
+        try:
+            fixed = f.fix_gap(gap)
+        except IndexError:
+            continue
+
+        if fixed[0]:
+            try:
+                assembly.resolve_gap(gap, fixed[1])
+                logger.info(f"Gap in scaffold {gap.contig.id} of {gap.length}bp, starting at {gap.start} is fixed!")
+            except AssertionError:
+                logger.warning("Something unexpected went wrong")
+                logger.warning(f"Gap in scaffold {gap.contig.id} of {gap.length}bp, starting at {gap.start} could not "
+                               f"be fixed (based on assertion)")
+        else:
+            logger.warning(f"Gap in scaffold {gap.contig.id} of {gap.length}bp, starting at {gap.start} could not be "
+                           f"fixed")
+
+    assembly.write_to_output(options.outfile)
+
+
